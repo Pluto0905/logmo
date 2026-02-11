@@ -1,28 +1,48 @@
+from flask import Flask, render_template_string
 import shutil
-import time
-from datetime import datetime
 
-# 1. ストレージの情報を調べて表示する「機能」を作る
-def check_storage():
-    # ディスクの使用状況を取得
+app = Flask(__name__)
+
+# ブラウザでアクセスした時に表示される「見た目（HTML）」
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Logmo - Storage Monitor</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: sans-serif; text-align: center; background: #f4f7f6; padding-top: 50px; }
+        .card { background: white; padding: 20px; border-radius: 10px; display: inline-block; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        h1 { color: #333; }
+        .usage { font-size: 3rem; font-weight: bold; color: #e74c3c; }
+        .info { color: #777; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>サーバー使用率</h1>
+        <div class="usage">{{ percent }}%</div>
+        <div class="info">空き容量: {{ free_gb }} GB / 全容量: {{ total_gb }} GB</div>
+    </div>
+</body>
+</html>
+"""
+
+@app.route('/')
+def index():
+    # ストレージ情報を取得
     total, used, free = shutil.disk_usage("/")
     
-    # 使用率をパーセントで計算
-    percent = used / total * 100
+    # データを整理
+    total_gb = total // (2**30)
+    used_gb = used // (2**30)
+    free_gb = free // (2**30)
+    percent = round(used / total * 100, 1)
     
-    # 現在の時刻を読みやすい形式にする
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    # 画面に結果を表示する
-    print(f"[{now}] 使用率: {percent:.1f}% (空き: {free // (2**30)} GB)")
+    # HTMLにデータを流し込んで表示する
+    return render_template_string(HTML_TEMPLATE, percent=percent, free_gb=free_gb, total_gb=total_gb)
 
-# 2. ここからがプログラムの「本番（実行）」
-print("starting logmo...")
-
-try:
-    while True:         # ずっと繰り返す（無限ループ）
-        check_storage() # 上で作った「機能」を実行する
-        time.sleep(5)   # 5秒間お休みする
-except KeyboardInterrupt:
-    # Ctrl + C が押されたらここに来る
-    print("\n監視を終了します。お疲れ様でした！")
+if __name__ == '__main__':
+    # サーバーを起動（port 5000番を使用）
+    app.run(host='0.0.0.0', port=5000)
