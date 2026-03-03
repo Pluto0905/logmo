@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <title>logmo</title>
+</head>
+
+<body>
+    <h1>logmo</h1>
+    <p id="storage">読み込み中...</p>
+
+    <script>
+        fetch("/storage")
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById("storage").textContent =
+                    "合計: " + data.total_gb + "GB / " +
+                    "使用中: " + data.used_gb + "GB / " +
+                    "空き: " + data.free_gb + "GB";
+            });
+    </script>
+</body>
+
+</html>
