@@ -12,9 +12,9 @@
 
     <script>
         fetch("/storage")
-            .then(response => response.json())
+            .then(response => response.json()) //httpレスポンスの取り出したいjsonデータだけ抽出してdataというjsのオブジェクト型の変数に代入している
             .then(data => {
-                document.getElementById("storage").textContent =
+                document.getElementById("storage").textContent = //11行目のテキスト内容を以下に変更
                     "合計: " + data.total_gb + "GB / " +
                     "使用中: " + data.used_gb + "GB / " +
                     "空き: " + data.free_gb + "GB";
