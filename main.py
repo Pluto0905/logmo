@@ -39,6 +39,10 @@ async def send_notification(message: str):
         await client.post(
             "http://localhost:8090/logmo", #ntfyサーバーのlogmoトピックのURL
             content=message.encode("utf-8"),
+            headers={
+                "Title": "logmo",
+                "Icon": "https://raw.githubusercontent.com/Pluto0905/logmo/main/static/icon.jpg",
+            }
         )
 
 
