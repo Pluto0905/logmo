@@ -16,6 +16,9 @@ import asyncio
 #httpリクエストを実行する
 import httpx
 
+#yield のある非同期関数を async with で使えるように変換するものらしい
+from contextlib import asynccontextmanager
+
 
 def fetch_storage():
     usage = shutil.disk_usage("/")
@@ -34,6 +37,32 @@ def fetch_power():
     }
 
 
+async def monitor():
+    last_ac_status = True
+    last_storage_notified = False
+
+    while True:
+        try: #このブロックの中でpythonがException系を吐いたらexceptに飛ぶ。そしてそのインスタンスがe。try-except処理でエラーが出ても６０秒おきにmonitor()が実行するようになっている。もしこの処理がないと、無限ループ内なので、エラーの際そこで止まり続ける。
+            power = fetch_power()
+            storage = fetch_storage()
+
+            if last_ac_status and not power["ac_connected"]:
+                await send_notification("⚠️ AC電源が切断されました！")
+            last_ac_status = power["ac_connected"]
+
+            used_percent = storage["used_gb"] / storage["total_gb"] * 100
+            if used_percent >= 90 and not last_storage_notified:
+                await send_notification(f"⚠️ ストレージが{round(used_percent, 1)}%に達しました！")
+                last_storage_notified = True
+            elif used_percent < 90:
+                last_storage_notified = False
+        
+        except Exception as e: #エラーがException系ならここ（except）に飛ぶ。そしてそのインスタンスがe
+            print(f"monitor error: {e}") #内部にロギングされてるらしい
+
+        await asyncio.sleep(60)
+
+
 async def send_notification(message: str):
     async with httpx.AsyncClient() as client: #clientというhttpリクエストを送るインスタンスを作る
         await client.post(
@@ -46,8 +75,15 @@ async def send_notification(message: str):
         )
 
 
-#webアプリの司令塔、インスタンスを作成する
-app = FastAPI()
+@asynccontextmanager #FastAPIが内部でasync withでこの関数を呼び出せるようにするためらしい
+async def lifespan(app: FastAPI):
+    asyncio.create_task(monitor())
+    yield #FastAPIのlifespan関連のドキュメントにこう書けと書いてある。動作の主がuvicornが起動したapp(FastAPI)からuvicornに戻る。ブラウザからのリクエストを受け付け始める。
+
+
+#webアプリの司令塔を作成。インスタンスを作成するという。司令塔を作成する際の追加オプションみたいな感じで、定義したlifespan()を引数に。main.pyでappに情報を詰め込み、そのappを基にuvicornがASGIサーバーを実行する
+app = FastAPI(lifespan=lifespan)
+
 
 #urlが/staticの場合、staticフォルダを見てね、ってことらしい
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -67,25 +103,9 @@ def get_storage():
 async def websocket_endpoint(websocket: WebSocket): #Websocket型のデータがwebsocketという変数にFastAPIが自動で代入する。WebSocketとはhttpのような通信方式の名前
     await websocket.accept()
 
-    last_ac_status = True
-    last_storage_notified = False
-
     while True:
         storage = fetch_storage()
         power = fetch_power()
-
-        # AC電源が抜けたとき通知
-        if last_ac_status and not power["ac_connected"]:
-            await send_notification("⚠️ AC電源が切断されました！")
-        last_ac_status = power["ac_connected"]
-
-        # ストレージが90%を超えたとき通知
-        used_percent = storage["used_gb"] / storage["total_gb"] * 100
-        if used_percent >= 90 and not last_storage_notified:
-            await send_notification(f"⚠️ ストレージが{round(used_percent, 1)}%に達しました！")
-            last_storage_notified = True
-        elif used_percent < 90:
-            last_storage_notified = False
 
         await websocket.send_json({
             **storage, #**で２つの辞書型のデータを合体させている
