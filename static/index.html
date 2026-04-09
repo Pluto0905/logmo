@@ -11,6 +11,9 @@
 
     <p id="storage">読み込み中...</p>
     <p id="power">電源: 読み込み中...</p>
+    <p id="immich-current">Immich 現在バージョン: 読み込み中...</p>
+    <p id="immich-latest">Immich 最新バージョン: 読み込み中...</p>
+    <p id="immich-status"></p>
     <p id="last-updated">最終更新: -</p>
 
     <script>
@@ -25,6 +28,19 @@
 
             document.getElementById("power").textContent =
                 "電源: " + (data.ac_connected ? "AC接続中" : "バッテリー駆動中");
+
+            document.getElementById("immich-current").textContent =
+                "Immich 現在バージョン: " + (data.immich_current_version || "取得失敗");
+
+            document.getElementById("immich-latest").textContent =
+                "Immich 最新バージョン: " + (data.immich_latest_version || "取得失敗");
+
+            if (data.immich_error) {
+                document.getElementById("immich-status").textContent =
+                    "Immich取得エラー: " + data.immich_error;
+            } else {
+                document.getElementById("immich-status").textContent = "";
+            }
 
             const now = new Date();
             document.getElementById("last-updated").textContent =

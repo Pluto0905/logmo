@@ -16,6 +16,9 @@ import asyncio
 #httpリクエストを実行する
 import httpx
 
+
+import os
+
 #yield のある非同期関数を async with で使えるように変換するものらしい
 from contextlib import asynccontextmanager
 
@@ -34,6 +37,62 @@ def fetch_power():
         status = f.read().strip() #文字列を読み取り、余分な文字を取り除く
     return {
         "ac_connected": status == "1" #真なら{ac_connected: True}を返す。偽ならFalse
+    }
+
+
+async def fetch_immich_versions():
+    immich_url = os.getenv("IMMICH_URL", "http://localhost:2283").rstrip("/") #urlの末尾から"/"を取り除く
+    current_version = None
+    latest_version = None
+    error = None
+
+    async with httpx.AsyncClient(timeout=10.0) as client: #httpリクエストを送るための道具. 10.0たっても返事がなければ失敗とする
+        try:
+            current_res = await client.get(f"{immich_url}/api/server/version")
+            
+            #with open("/tmp/logmo_debug.log", "a") as f:
+             #   f.write(f"DEBUG: Status={current_res.status_code}, URL={immich_url}/api/server/version\n")
+            
+            current_res.raise_for_status() #200でない場合、例外を発生させてexceptへ飛ぶ
+            current_payload = current_res.json() #current_resというhttpレスポンス本文をjsonに変換して、適切にpythonに対応した型として代入される
+            
+            #with open("/tmp/logmo_debug.log", "a") as f:
+             #   f.write(f"DEBUG: current_payload={current_payload}\n")
+              #  f.write(f"DEBUG: types - major:{type(current_payload.get('major'))}, minor:{type(current_payload.get('minor'))}, patch:{type(current_payload.get('patch'))}\n")
+            
+            if isinstance(current_payload, dict): #current_payloadがdict型かどうか
+                major = current_payload.get("major")
+                minor = current_payload.get("minor")
+                patch = current_payload.get("patch")
+                if all(isinstance(v, int) for v in (major, minor, patch)):
+                    current_version = f"v{major}.{minor}.{patch}"
+        except Exception as e:
+            error = f"current_version_error: {e}"
+            
+            #with open("/tmp/logmo_debug.log", "a") as f:
+             #   f.write(f"DEBUG: Exception in current_version - {e}\n")
+
+        try:
+            latest_res = await client.get(
+                "https://api.github.com/repos/immich-app/immich/releases/latest",
+                headers={"Accept": "application/vnd.github+json"}, #application/vnd.github+json ←というデータ形式しか受け付けませんよと言っている
+            )
+            latest_res.raise_for_status()
+            latest_payload = latest_res.json()
+            if isinstance(latest_payload, dict):
+                tag = latest_payload.get("tag_name")
+                if isinstance(tag, str) and tag.strip(): #文字列型かつ空白でない
+                    latest_version = tag.strip() #文字列の前後から空白を除いたもの
+        except Exception as e:
+            if error:
+                error = f"{error}; latest_version_error: {e}" #current_versionの方のエラーを追加している。余談だが;にはそういう意味でつかわれる
+            else:
+                error = f"latest_version_error: {e}"
+
+    return {
+        "immich_current_version": current_version,
+        "immich_latest_version": latest_version,
+        "immich_error": error,
     }
 
 
@@ -99,6 +158,11 @@ def read_root():
 def get_storage():
     return fetch_storage()
 
+
+@app.get("/immich/version")
+async def get_immich_version():
+    return await fetch_immich_versions()
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket): #Websocket型のデータがwebsocketという変数にFastAPIが自動で代入する。WebSocketとはhttpのような通信方式の名前
     await websocket.accept()
@@ -106,10 +170,12 @@ async def websocket_endpoint(websocket: WebSocket): #Websocket型のデータが
     while True:
         storage = fetch_storage()
         power = fetch_power()
+        immich = await fetch_immich_versions()
 
         await websocket.send_json({
             **storage, #**で２つの辞書型のデータを合体させている
             **power,
+            **immich,
         })
 
         await asyncio.sleep(60)
