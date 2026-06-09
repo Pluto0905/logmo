@@ -16,6 +16,7 @@ import asyncio
 #httpリクエストを実行する
 import httpx
 
+import re
 
 import os
 
@@ -38,6 +39,17 @@ def fetch_power():
     return {
         "ac_connected": status == "1" #真なら{ac_connected: True}を返す。偽ならFalse
     }
+
+
+def normalize_version_text(version_text):
+    if not isinstance(version_text, str):
+        return None
+
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", version_text)
+    if not match:
+        return None
+
+    return f"v{match.group(1)}.{match.group(2)}.{match.group(3)}"
 
 
 async def fetch_immich_versions():
@@ -96,14 +108,60 @@ async def fetch_immich_versions():
     }
 
 
+async def fetch_nextcloud_versions():
+    nextcloud_url = os.getenv("NEXTCLOUD_URL", "http://localhost:8080").rstrip("/")
+    current_version = None
+    latest_version = None
+    error = None
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            current_res = await client.get(f"{nextcloud_url}/status.php")
+            current_res.raise_for_status()
+            current_payload = current_res.json()
+
+            if isinstance(current_payload, dict):
+                current_raw_version = current_payload.get("versionstring") or current_payload.get("version")
+                current_version = normalize_version_text(current_raw_version)
+
+            if not current_version:
+                error = f"current_version_error: {nextcloud_url}/status.php did not include a parseable version"
+        except Exception as e:
+            error = f"current_version_error: {e}"
+
+        try:
+            latest_res = await client.get(
+                "https://api.github.com/repos/nextcloud/server/releases/latest",
+                headers={"Accept": "application/vnd.github+json"},
+            )
+            latest_res.raise_for_status()
+            latest_payload = latest_res.json()
+            if isinstance(latest_payload, dict):
+                tag = latest_payload.get("tag_name")
+                latest_version = normalize_version_text(tag)
+        except Exception as e:
+            if error:
+                error = f"{error}; latest_version_error: {e}"
+            else:
+                error = f"latest_version_error: {e}"
+
+    return {
+        "nextcloud_current_version": current_version,
+        "nextcloud_latest_version": latest_version,
+        "nextcloud_error": error,
+    }
+
+
 async def monitor():
     last_ac_status = True
     last_storage_notified = False
+    last_nextcloud_update_notified = False
 
     while True:
         try: #このブロックの中でpythonがException系を吐いたらexceptに飛ぶ。そしてそのインスタンスがe。try-except処理でエラーが出ても６０秒おきにmonitor()が実行するようになっている。もしこの処理がないと、無限ループ内なので、エラーの際そこで止まり続ける。
             power = fetch_power()
             storage = fetch_storage()
+            nextcloud = await fetch_nextcloud_versions()
 
             if last_ac_status and not power["ac_connected"]:
                 await send_notification("⚠️ AC電源が切断されました！")
@@ -115,6 +173,18 @@ async def monitor():
                 last_storage_notified = True
             elif used_percent < 90:
                 last_storage_notified = False
+
+            if nextcloud["nextcloud_current_version"] and nextcloud["nextcloud_latest_version"]:
+                if nextcloud["nextcloud_current_version"] != nextcloud["nextcloud_latest_version"]:
+                    if not last_nextcloud_update_notified:
+                        await send_notification(
+                            "⚠️ Nextcloud に更新があります！ "
+                            f"現在: {nextcloud['nextcloud_current_version']} / "
+                            f"最新: {nextcloud['nextcloud_latest_version']}"
+                        )
+                        last_nextcloud_update_notified = True
+                else:
+                    last_nextcloud_update_notified = False
         
         except Exception as e: #エラーがException系ならここ（except）に飛ぶ。そしてそのインスタンスがe
             print(f"monitor error: {e}") #内部にロギングされてるらしい
@@ -148,7 +218,7 @@ app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
-#関数をデコレートしてwebアプリの一部としてのインターフェース(/がAPI)となっている
+#関数をデコレートしてwebアプリの一部としてのインターフェース(/がAPI)となっている。今回これらのapiは用いていない。
 @app.get("/")
 def read_root():
     return FileResponse("static/index.html")
@@ -163,6 +233,11 @@ def get_storage():
 async def get_immich_version():
     return await fetch_immich_versions()
 
+
+@app.get("/nextcloud/version")
+async def get_nextcloud_version():
+    return await fetch_nextcloud_versions()
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket): #Websocket型のデータがwebsocketという変数にFastAPIが自動で代入する。WebSocketとはhttpのような通信方式の名前
     await websocket.accept()
@@ -171,11 +246,13 @@ async def websocket_endpoint(websocket: WebSocket): #Websocket型のデータが
         storage = fetch_storage()
         power = fetch_power()
         immich = await fetch_immich_versions()
+        nextcloud = await fetch_nextcloud_versions()
 
         await websocket.send_json({
             **storage, #**で２つの辞書型のデータを合体させている
             **power,
             **immich,
+            **nextcloud,
         })
 
         await asyncio.sleep(60)
