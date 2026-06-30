@@ -59,10 +59,4 @@ sudo systemctl enable --now logmo
 - `IMMICH_URL`: Immich の状態取得エンドポイント
 - `NEXTCLOUD_URL`: Nextcloud の `status.php` を利用して現在バージョンを取得。最新バージョンは GitHub Releases から比較取得
 
-## ポイント
-- フルスタックでサービスを設計・実装し、Linux サーバーにデプロイ済み
-- systemd / ASGI / FastAPI の実運用経験
-- サービス連携（外部 API / Releases 取得）や WebSocket を用いたフロント実装経験
-- 障害検知から通知までのエンドツーエンド実装経験
-
 ---------------------------------------------------------
