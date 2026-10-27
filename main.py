@@ -54,24 +54,17 @@ def normalize_version_text(version_text):
 
 async def fetch_immich_versions():
     immich_url = os.getenv("IMMICH_URL", "http://localhost:2283").rstrip("/") #urlの末尾から"/"を取り除く
+    api_key = os.getenv("IMMICH_API_KEY") #version-checkはログインが必要なので、server.versionCheck権限だけのAPIキーを使う
     current_version = None
     latest_version = None
-    error = None
+    errors = []
 
     async with httpx.AsyncClient(timeout=10.0) as client: #httpリクエストを送るための道具. 10.0たっても返事がなければ失敗とする
         try:
             current_res = await client.get(f"{immich_url}/api/server/version")
-            
-            #with open("/tmp/logmo_debug.log", "a") as f:
-             #   f.write(f"DEBUG: Status={current_res.status_code}, URL={immich_url}/api/server/version\n")
-            
             current_res.raise_for_status() #200でない場合、例外を発生させてexceptへ飛ぶ
             current_payload = current_res.json() #current_resというhttpレスポンス本文をjsonに変換して、適切にpythonに対応した型として代入される
-            
-            #with open("/tmp/logmo_debug.log", "a") as f:
-             #   f.write(f"DEBUG: current_payload={current_payload}\n")
-              #  f.write(f"DEBUG: types - major:{type(current_payload.get('major'))}, minor:{type(current_payload.get('minor'))}, patch:{type(current_payload.get('patch'))}\n")
-            
+
             if isinstance(current_payload, dict): #current_payloadがdict型かどうか
                 major = current_payload.get("major")
                 minor = current_payload.get("minor")
@@ -79,32 +72,31 @@ async def fetch_immich_versions():
                 if all(isinstance(v, int) for v in (major, minor, patch)):
                     current_version = f"v{major}.{minor}.{patch}"
         except Exception as e:
-            error = f"current_version_error: {e}"
-            
-            #with open("/tmp/logmo_debug.log", "a") as f:
-             #   f.write(f"DEBUG: Exception in current_version - {e}\n")
+            errors.append(f"current_version_error: {e}")
 
+        #Immich自身が1時間に1回確認している最新バージョンを読むだけなので、GitHubには問い合わせない
         try:
+            if not api_key:
+                raise ValueError("IMMICH_API_KEY is not set")
+
             latest_res = await client.get(
-                "https://api.github.com/repos/immich-app/immich/releases/latest",
-                headers={"Accept": "application/vnd.github+json"}, #application/vnd.github+json ←というデータ形式しか受け付けませんよと言っている
+                f"{immich_url}/api/server/version-check",
+                headers={"x-api-key": api_key},
             )
             latest_res.raise_for_status()
             latest_payload = latest_res.json()
             if isinstance(latest_payload, dict):
-                tag = latest_payload.get("tag_name")
-                if isinstance(tag, str) and tag.strip(): #文字列型かつ空白でない
-                    latest_version = tag.strip() #文字列の前後から空白を除いたもの
+                latest_version = normalize_version_text(latest_payload.get("releaseVersion"))
+
+            if not latest_version: #Immichの管理画面でバージョンチェックが無効だとreleaseVersionがnullになる
+                raise ValueError("releaseVersion is empty (is version check enabled in Immich?)")
         except Exception as e:
-            if error:
-                error = f"{error}; latest_version_error: {e}" #current_versionの方のエラーを追加している。余談だが;にはそういう意味でつかわれる
-            else:
-                error = f"latest_version_error: {e}"
+            errors.append(f"latest_version_error: {e}")
 
     return {
         "immich_current_version": current_version,
         "immich_latest_version": latest_version,
-        "immich_error": error,
+        "immich_error": "; ".join(errors) or None, #エラーが複数あれば;でつなぐ。なければNone
     }
 
 
@@ -112,7 +104,7 @@ async def fetch_nextcloud_versions():
     nextcloud_url = os.getenv("NEXTCLOUD_URL", "http://localhost:8080").rstrip("/")
     current_version = None
     latest_version = None
-    error = None
+    errors = []
 
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
@@ -125,43 +117,64 @@ async def fetch_nextcloud_versions():
                 current_version = normalize_version_text(current_raw_version)
 
             if not current_version:
-                error = f"current_version_error: {nextcloud_url}/status.php did not include a parseable version"
+                raise ValueError(f"{nextcloud_url}/status.php did not include a parseable version")
         except Exception as e:
-            error = f"current_version_error: {e}"
+            errors.append(f"current_version_error: {e}")
 
+        #公式の配布サーバーのファイル一覧から、nextcloud-X.Y.Z.zip の一番新しい番号を最新とする。httpxが自動でgzip圧縮を頼むので約40KBで済む
         try:
-            latest_res = await client.get(
-                "https://api.github.com/repos/nextcloud/server/releases/latest",
-                headers={"Accept": "application/vnd.github+json"},
-            )
+            latest_res = await client.get("https://download.nextcloud.com/server/releases/")
             latest_res.raise_for_status()
-            latest_payload = latest_res.json()
-            if isinstance(latest_payload, dict):
-                tag = latest_payload.get("tag_name")
-                latest_version = normalize_version_text(tag)
+            versions = re.findall(r'href="nextcloud-(\d+)\.(\d+)\.(\d+)\.zip"', latest_res.text)
+            if not versions:
+                raise ValueError("no release found in download.nextcloud.com listing")
+
+            major, minor, patch = max(tuple(int(n) for n in v) for v in versions) #文字列のままだと"9">"35"になるので数値にして比べる
+            latest_version = f"v{major}.{minor}.{patch}"
         except Exception as e:
-            if error:
-                error = f"{error}; latest_version_error: {e}"
-            else:
-                error = f"latest_version_error: {e}"
+            errors.append(f"latest_version_error: {e}")
 
     return {
         "nextcloud_current_version": current_version,
         "nextcloud_latest_version": latest_version,
-        "nextcloud_error": error,
+        "nextcloud_error": "; ".join(errors) or None,
     }
+
+
+#バージョン情報の保存場所。version_updater()が定期的に書き込み、monitor()やWebSocketはここを読むだけ。こうすることでタブをいくつ開いても外部への問い合わせは増えない
+version_cache = {
+    "immich_current_version": None,
+    "immich_latest_version": None,
+    "immich_error": None,
+    "nextcloud_current_version": None,
+    "nextcloud_latest_version": None,
+    "nextcloud_error": None,
+}
+
+
+async def version_updater(fetch_versions, interval_seconds):
+    while True:
+        try:
+            result = await fetch_versions()
+            for key, value in result.items():
+                #取得に失敗したバージョンはNoneなので上書きせず、前回の値を残す。エラーは毎回上書きして、直ったら消えるようにする
+                if key.endswith("_error") or value is not None:
+                    version_cache[key] = value
+        except Exception as e:
+            print(f"version updater error: {e}")
+
+        await asyncio.sleep(interval_seconds)
 
 
 async def monitor():
     last_ac_status = True
     last_storage_notified = False
-    last_nextcloud_update_notified = False
+    last_update_notified = {"immich": False, "nextcloud": False}
 
     while True:
         try: #このブロックの中でpythonがException系を吐いたらexceptに飛ぶ。そしてそのインスタンスがe。try-except処理でエラーが出ても６０秒おきにmonitor()が実行するようになっている。もしこの処理がないと、無限ループ内なので、エラーの際そこで止まり続ける。
             power = fetch_power()
             storage = fetch_storage()
-            nextcloud = await fetch_nextcloud_versions()
 
             if last_ac_status and not power["ac_connected"]:
                 await send_notification("⚠️ AC電源が切断されました！")
@@ -174,18 +187,22 @@ async def monitor():
             elif used_percent < 90:
                 last_storage_notified = False
 
-            if nextcloud["nextcloud_current_version"] and nextcloud["nextcloud_latest_version"]:
-                if nextcloud["nextcloud_current_version"] != nextcloud["nextcloud_latest_version"]:
-                    if not last_nextcloud_update_notified:
-                        await send_notification(
-                            "⚠️ Nextcloud に更新があります！ "
-                            f"現在: {nextcloud['nextcloud_current_version']} / "
-                            f"最新: {nextcloud['nextcloud_latest_version']}"
-                        )
-                        last_nextcloud_update_notified = True
-                else:
-                    last_nextcloud_update_notified = False
-        
+            #バージョンはversion_updater()が保存したものを読むだけ。ここでは外部に問い合わせない
+            for prefix, name in (("immich", "Immich"), ("nextcloud", "Nextcloud")):
+                current_version = version_cache[f"{prefix}_current_version"]
+                latest_version = version_cache[f"{prefix}_latest_version"]
+                if current_version and latest_version:
+                    if current_version != latest_version:
+                        if not last_update_notified[prefix]:
+                            await send_notification(
+                                f"⚠️ {name} に更新があります！ "
+                                f"現在: {current_version} / "
+                                f"最新: {latest_version}"
+                            )
+                            last_update_notified[prefix] = True
+                    else:
+                        last_update_notified[prefix] = False
+
         except Exception as e: #エラーがException系ならここ（except）に飛ぶ。そしてそのインスタンスがe
             print(f"monitor error: {e}") #内部にロギングされてるらしい
 
@@ -206,6 +223,8 @@ async def send_notification(message: str):
 
 @asynccontextmanager #FastAPIが内部でasync withでこの関数を呼び出せるようにするためらしい
 async def lifespan(app: FastAPI):
+    asyncio.create_task(version_updater(fetch_immich_versions, 5 * 60)) #Immichは手元のサーバーに聞くだけなので5分ごと
+    asyncio.create_task(version_updater(fetch_nextcloud_versions, 60 * 60)) #Nextcloudは外部の配布サーバーなので1時間ごと
     asyncio.create_task(monitor())
     yield #FastAPIのlifespan関連のドキュメントにこう書けと書いてある。動作の主がuvicornが起動したapp(FastAPI)からuvicornに戻る。ブラウザからのリクエストを受け付け始める。
 
@@ -230,13 +249,13 @@ def get_storage():
 
 
 @app.get("/immich/version")
-async def get_immich_version():
-    return await fetch_immich_versions()
+def get_immich_version():
+    return {key: value for key, value in version_cache.items() if key.startswith("immich_")}
 
 
 @app.get("/nextcloud/version")
-async def get_nextcloud_version():
-    return await fetch_nextcloud_versions()
+def get_nextcloud_version():
+    return {key: value for key, value in version_cache.items() if key.startswith("nextcloud_")}
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket): #Websocket型のデータがwebsocketという変数にFastAPIが自動で代入する。WebSocketとはhttpのような通信方式の名前
@@ -245,14 +264,11 @@ async def websocket_endpoint(websocket: WebSocket): #Websocket型のデータが
     while True:
         storage = fetch_storage()
         power = fetch_power()
-        immich = await fetch_immich_versions()
-        nextcloud = await fetch_nextcloud_versions()
 
         await websocket.send_json({
             **storage, #**で２つの辞書型のデータを合体させている
             **power,
-            **immich,
-            **nextcloud,
+            **version_cache, #保存済みのバージョン情報を送るだけなので、接続が増えても外部への問い合わせは増えない
         })
 
         await asyncio.sleep(60)

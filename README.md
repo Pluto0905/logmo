@@ -38,6 +38,7 @@ After=network.target
 User=sogo
 WorkingDirectory=/home/sogo/logmo
 ExecStart=/home/sogo/logmo/venv/bin/uvicorn main:app --host 0.0.0.0
+EnvironmentFile=/home/sogo/logmo/.env
 Restart=always
 
 [Install]
@@ -51,12 +52,17 @@ sudo systemctl enable --now logmo
 ## 環境変数（例）
 - `IMMICH_URL`（既定: `http://localhost:2283`）
 - `NEXTCLOUD_URL`（既定: `http://localhost`）
+- `IMMICH_API_KEY`（必須: Immich で `server.versionCheck` 権限だけを付けた API キー）
+
+キーは `.env`（`.gitignore` 済み、`chmod 600`）に書き、systemd ユニットの `[Service]` に `EnvironmentFile=/home/sogo/logmo/.env` を追加して読み込ませます。
 
 ## アクセス
 ブラウザからアクセス: http://<TailscaleのIP>:8000
 
 ## 監視対象の詳細
-- `IMMICH_URL`: Immich の状態取得エンドポイント
-- `NEXTCLOUD_URL`: Nextcloud の `status.php` を利用して現在バージョンを取得。最新バージョンは GitHub Releases から比較取得
+- `IMMICH_URL`: `/api/server/version` で現在バージョン、`/api/server/version-check`（`IMMICH_API_KEY` を使用）で Immich 自身が1時間ごとに確認している最新バージョンを取得。5分ごとに更新
+- `NEXTCLOUD_URL`: Nextcloud の `status.php` を利用して現在バージョンを取得。最新バージョンは公式配布サーバー（`download.nextcloud.com/server/releases/`）のファイル一覧から取得。1時間ごとに更新
+- 取得結果はアプリ内に保存して使い回すため、ブラウザのタブを増やしても外部への問い合わせは増えません。取得に失敗した場合は前回の値を残し、エラーを表示します
+- Immich・Nextcloud とも、更新を見つけると ntfy で1回だけ通知します
 
 ---------------------------------------------------------
