@@ -1,35 +1,116 @@
+<p align="center">
+  <img src="static/icon.jpg" alt="logmo icon" width="120">
+</p>
+
 # logmo
 
-自宅サーバー監視 Web アプリ — リソース監視・サービス状態取得・通知機能を提供します。
+**自宅サーバーの「異常に気づけない」を解決する、監視 Web アプリ**
 
-## 概要
-`logmo` は自宅サーバー上で稼働する軽量の監視 Web アプリです。Nextcloud や Immich などのサービス状態、ストレージ使用率、重要ログを収集し、閾値を超えた場合に通知します。systemd と uvicorn/FastAPI で常時稼働する構成です。
+使わなくなったノートPCで自宅サーバー（Nextcloud・Immich）を構築・運用する中で、電源が抜けたり、ストレージ容量が逼迫したりしても気づけないという課題がありました。logmo はサーバーの状態を常時監視し、異常があればスマホに通知します。
 
-## 自分の役割
-- 設計・実装・デプロイ（フルスタック、ソロ開発）
-- API と監視ロジック、systemd サービス定義の作成、通知フロー実装
+- 開発期間：約3か月（大学2年次、個人開発）
+- 担当：設計・実装・デプロイ・運用（すべて1人）
+
+<!-- スクリーンショットを static/screenshot.png に置くと表示されます -->
+<!-- ![logmo の画面](static/screenshot.png) -->
+
+---
+
+## 背景
+
+| 困りごと | 内容 |
+|---|---|
+| 写真のバックアップ | Googleフォトでバックアップできない状況になり、自分のサーバー（Immich）に移行した |
+| 家族のデータ | 父が会社のクラウドに保存していたプライベートなデータを、自分のサーバー（Nextcloud）に移行した |
+| 異常に気づけない | 電源プラグが抜けても、ストレージ容量が逼迫しても、気づく手段がなかった |
+
+家族のデータも預かる以上、「止まっていた・壊れていたことに後から気づく」状態をなくしたいと考え、logmo を作りました。
 
 ## 主な機能
-- 各種サービス（Nextcloud、Immich 等）のバージョンチェック
-- ストレージ使用率の監視と閾値超過時の通知
-- システム／セキュリティ関連の高重要度ログ収集と通知
-- サーバーの電源（コンセント）状態チェックと通知
-- Web UI で状態を一覧表示（WebSocket で更新）
+
+| 監視項目 | 方法 | 通知のタイミング |
+|---|---|---|
+| 電源（AC）の接続 | `/sys/class/power_supply/AC/online` を60秒ごとに確認 | 接続→切断に変わったとき |
+| ストレージ使用率 | `shutil.disk_usage` を60秒ごとに確認 | 90%以上になったとき（下回るまで再通知しない） |
+| Immich のバージョン | Immich の API で現在／最新バージョンを取得（5分ごと） | 更新が見つかったとき1回だけ |
+| Nextcloud のバージョン | `status.php` と公式配布サーバーから取得（1時間ごと） | 更新が見つかったとき1回だけ |
+
+- 通知はセルフホストの **ntfy** でスマホに送ります
+- Web 画面では、WebSocket で状態を一覧表示します
+
+## システム構成
+
+```mermaid
+flowchart LR
+    subgraph Home["自宅サーバー（旧ノートPC / Linux）"]
+        systemd --> uvicorn --> logmo["logmo<br>(FastAPI)"]
+        logmo -->|状態取得| Immich
+        logmo -->|状態取得| Nextcloud
+        logmo -->|通知| ntfy
+        logmo -->|読み取り| OS["電源・ストレージ"]
+    end
+    Nextcloud_dl["Nextcloud 公式配布サーバー"] -.->|最新バージョン| logmo
+    Phone["スマホ / PC"] <-->|Tailscale VPN| Home
+```
+
+- **ポート開放はしていません。** 外部からのアクセスはすべて Tailscale のプライベートネットワーク経由です
+- systemd で常時起動し、落ちても自動で再起動します（`Restart=always`）
 
 ## 技術スタック
-- 言語: Python
-- フレームワーク: FastAPI
-- ASGI サーバー: uvicorn
-- デプロイ: systemd サービス
-- フロントエンド: シンプルな静的 HTML/JS（WebSocket を利用）
 
-## アーキテクチャ（要点）
-- systemd が `uvicorn` を起動し、`main.py` 内の `FastAPI` アプリが稼働します。
-- アプリ起動時にライフサイクル（lifespan）で初期化処理を行い、定期的に各サービスの状態を取得します。
+| 分類 | 使用技術 |
+|---|---|
+| バックエンド | Python / FastAPI / uvicorn / httpx（非同期） |
+| フロントエンド | HTML / CSS / JavaScript（WebSocket） |
+| 通知 | ntfy（セルフホスト） |
+| ネットワーク | Tailscale |
+| 運用 | systemd / journald |
+| 監視対象 | Nextcloud / Immich |
 
-## デプロイ（ systemd ）
-作成済みの systemd ユニットファイル例（ `/etc/systemd/system/logmo.service` ）:
+## 工夫したこと
 
+### 1. ポートを開けずに安全に使える構成にした
+セキュリティの知識がまだ少なく、ほぼ放置で動かすサーバーのポートを開放するのはリスクだと判断しました。Tailscale を使い、自分の端末からだけアクセスできる構成にしています。その際、Nextcloud の Google ログインのリダイレクト先や、VS Code のリモート接続先も Tailscale 側のアドレスにそろえる必要があり、ネットワーク構成を一つずつ確認しながら設定しました。
+
+### 2. ブラウザを開いていなくても通知が届くようにした
+最初は通知処理が WebSocket のループ内にあり、「通知が来るときと来ないときがある」状態でした。「ブラウザが接続している間しか動いていないのでは」と仮説を立てて調べ、FastAPI の `lifespan` でサーバー起動時に監視処理を始める形に変更しました。接続の有無に関係なく通知が届くようになりました。
+
+### 3. 外部への問い合わせを増やさない設計にした
+バージョン情報は取得結果をアプリ内にキャッシュして使い回しています。ブラウザのタブを増やしても外部への問い合わせは増えません。取得の間隔は、ローカルの Immich は5分、外部の配布サーバーを見る Nextcloud は1時間と分けています。取得に失敗した場合は前回の値を残し、エラーを表示します。
+
+### 4. 同じ通知を何度も送らない
+状態が「正常→異常」に変わったときだけ通知し、異常が続いても通知が鳴り続けないようにしています。
+
+### 5. 毎日使いたくなる見た目にした
+名前は「ログモニター」を略して親しみやすく「logmo」に。アイコンは厳しく見張るイメージのカラスです。配色や画面の見やすさにもこだわりました。
+
+## 成果
+
+- logmo の通知で、Nextcloud の動画キャッシュがたまりすぎてストレージが逼迫していることに気づけました。キャッシュを削除して解消し、対象のディレクトリをメモに残しています
+- 家族のデータを預かるサーバーを、異常に気づける状態で運用できています
+
+## 学んだこと
+
+- Linux の入門書から始め、サーバー・ネットワーク・プロセス管理（systemd）を実際に動かしながら学びました
+- 開発では AI も活用しました。システム構成をメモ（`memo.md`）にまとめて読ませ、エラーの際は自分の仮説とコードを添えて相談する形で進めました
+
+---
+
+## セットアップ
+
+### 環境変数
+
+| 変数名 | 既定値 | 説明 |
+|---|---|---|
+| `IMMICH_URL` | `http://localhost:2283` | Immich の URL |
+| `NEXTCLOUD_URL` | `http://localhost` | Nextcloud の URL |
+| `IMMICH_API_KEY` | （必須） | `server.versionCheck` 権限だけを付けた Immich の API キー |
+
+キーは `.env`（`.gitignore` 済み、`chmod 600`）に書き、systemd から読み込ませます。
+
+### systemd ユニット（`/etc/systemd/system/logmo.service`）
+
+```ini
 [Unit]
 Description=logmo
 After=network.target
@@ -43,26 +124,16 @@ Restart=always
 
 [Install]
 WantedBy=multi-user.target
+```
 
-起動・有効化例:
-
+```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now logmo
+sudo journalctl -u logmo -f   # ログ確認
+```
 
-## 環境変数（例）
-- `IMMICH_URL`（既定: `http://localhost:2283`）
-- `NEXTCLOUD_URL`（既定: `http://localhost`）
-- `IMMICH_API_KEY`（必須: Immich で `server.versionCheck` 権限だけを付けた API キー）
+### アクセス
 
-キーは `.env`（`.gitignore` 済み、`chmod 600`）に書き、systemd ユニットの `[Service]` に `EnvironmentFile=/home/sogo/logmo/.env` を追加して読み込ませます。
-
-## アクセス
-ブラウザからアクセス: http://<TailscaleのIP>:8000
-
-## 監視対象の詳細
-- `IMMICH_URL`: `/api/server/version` で現在バージョン、`/api/server/version-check`（`IMMICH_API_KEY` を使用）で Immich 自身が1時間ごとに確認している最新バージョンを取得。5分ごとに更新
-- `NEXTCLOUD_URL`: Nextcloud の `status.php` を利用して現在バージョンを取得。最新バージョンは公式配布サーバー（`download.nextcloud.com/server/releases/`）のファイル一覧から取得。1時間ごとに更新
-- 取得結果はアプリ内に保存して使い回すため、ブラウザのタブを増やしても外部への問い合わせは増えません。取得に失敗した場合は前回の値を残し、エラーを表示します
-- Immich・Nextcloud とも、更新を見つけると ntfy で1回だけ通知します
-
----------------------------------------------------------
+```
+http://<TailscaleのIP>:8000
+```
