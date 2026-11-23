@@ -137,3 +137,5 @@ sudo journalctl -u logmo -f   # ログ確認
 ```
 http://<TailscaleのIP>:8000
 ```
+
+📄 ポートフォリオ（スライド）: [ポートフォリオを見る](docs/logmo_ポートフォリオ.pdf)
